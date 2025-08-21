@@ -6,8 +6,10 @@ from urllib.parse import quote_plus
 # Escapamos caracteres especiales de la contraseña
 password_encoded = quote_plus(settings.DB_PASSWORD)
 
+# 🔑 String de conexión adaptado para pymysql
 DATABASE_URL = (
-    f"mysql+mysqlconnector://{settings.DB_USER}:{password_encoded}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
+    f"mysql+pymysql://{settings.DB_USER}:{password_encoded}"
+    f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
 )
 
 # Configuración del engine con pool para mejor rendimiento
@@ -31,4 +33,5 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
