@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, constr
-from typing import Literal
+from pydantic import BaseModel, EmailStr, StringConstraints
+from typing import Annotated
 from datetime import date
 
 class UsuarioBase(BaseModel):
@@ -25,12 +25,11 @@ class AuthUserBase(BaseModel):
     email: EmailStr
 
 class AuthUserCreate(AuthUserBase):
-    password: constr(min_length=8)  # contraseña mínima de 8 caracteres
+    password: Annotated[str, StringConstraints(min_length=8)] 
 
 class AuthUserOut(AuthUserBase):
     id: int
     is_active: bool
 
     class Config:
-        from_attributes = True  # ✅ en Pydantic v2
-        
+        from_attributes = True
