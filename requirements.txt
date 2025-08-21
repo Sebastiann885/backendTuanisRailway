@@ -1,12 +1,8 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
+pydantic[email]
 python-dotenv
-mysql-connector-python
 redis
-python-jose
-pydantic
+aiomysql
 itsdangerous
-python-multipart
-passlib[bcrypt]
-pydantic-settings
