@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from fastapi.security import OAuth2PasswordBearer
-from app import models, schemas, database
+from fastapi.concurrency import run_in_threadpool
+from app import models, schemas
 from app.database import get_db
-from app.cache import init_redis  # 🔹 Nuevo: Redis
-import os, json
+from app.cache import init_redis
+import os, json, asyncio
 
 router = APIRouter(prefix="/usuarios", tags=["Usuarios"])
 
@@ -48,10 +49,7 @@ def crear_usuario(
     db.commit()
     db.refresh(nuevo_usuario)
 
-    # 🔹 Limpiar cache porque la lista de usuarios cambió
-    # (mejor hacerlo con un patrón en Redis, ej: usuarios:*)
-    # Aquí simplificamos borrando el listado completo
-    import asyncio
+    # 🔹 Invalida cache de la lista de usuarios
     asyncio.create_task(invalidate_cache("usuarios:*"))
 
     return nuevo_usuario
@@ -69,8 +67,8 @@ async def listar_usuarios(
     if data := await redis.get(cache_key):
         return json.loads(data)
 
-    # Consultar BD
-    usuarios = db.query(models.Usuario).all()
+    # Consultar BD en threadpool (evita bloqueo)
+    usuarios = await run_in_threadpool(lambda: db.query(models.Usuario).all())
     usuarios_dict = [schemas.UsuarioOut.from_orm(u).dict() for u in usuarios]
 
     # Guardar en cache por 60 segundos
@@ -92,38 +90,41 @@ async def obtener_usuario(
     if data := await redis.get(cache_key):
         return json.loads(data)
 
-    # Consultar BD
-    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
+    # Consultar BD en threadpool
+    usuario = await run_in_threadpool(
+        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
+    )
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     usuario_dict = schemas.UsuarioOut.from_orm(usuario).dict()
 
-    # Guardar en cache por 60 segundos
+    # Guardar en cache
     await redis.set(cache_key, json.dumps(usuario_dict), ex=60)
 
     return usuario_dict
 
 
 @router.put("/{cedula}", response_model=schemas.UsuarioOut)
-def actualizar_usuario(
+async def actualizar_usuario(
     cedula: str,
     datos: schemas.UsuarioBase,
     db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
-    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
+    usuario = await run_in_threadpool(
+        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
+    )
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     for key, value in datos.dict().items():
         setattr(usuario, key, value)
 
-    db.commit()
-    db.refresh(usuario)
+    await run_in_threadpool(db.commit)
+    await run_in_threadpool(db.refresh, usuario)
 
-    # 🔹 Invalida cache del usuario y lista
-    import asyncio
+    # 🔹 Invalida cache
     asyncio.create_task(invalidate_cache(f"usuario:{cedula}"))
     asyncio.create_task(invalidate_cache("usuarios:all"))
 
@@ -131,20 +132,21 @@ def actualizar_usuario(
 
 
 @router.delete("/{cedula}")
-def eliminar_usuario(
+async def eliminar_usuario(
     cedula: str,
     db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
-    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
+    usuario = await run_in_threadpool(
+        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
+    )
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    db.delete(usuario)
-    db.commit()
+    await run_in_threadpool(lambda: db.delete(usuario))
+    await run_in_threadpool(db.commit)
 
     # 🔹 Invalida cache
-    import asyncio
     asyncio.create_task(invalidate_cache(f"usuario:{cedula}"))
     asyncio.create_task(invalidate_cache("usuarios:all"))
 
