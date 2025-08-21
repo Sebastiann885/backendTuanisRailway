@@ -5,10 +5,17 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import os
+import redis.asyncio as redis
+from app.config import settings
 
 from app.database import get_db
 from app.models import AuthUser
 from app.schemas import AuthUserCreate, AuthUserOut
+
+redis_client = redis.from_url(
+    settings.REDIS_URL,
+    decode_responses=True
+)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -57,7 +64,7 @@ def register(user_in: AuthUserCreate, db: Session = Depends(get_db)):
     return new_user
 
 @router.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(AuthUser).filter(AuthUser.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
@@ -66,15 +73,24 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
+
+    # ✅ Guardamos el token en Redis con TTL
+    await redis_client.setex(f"token:{user.username}", ACCESS_TOKEN_EXPIRE_MINUTES * 60, access_token)
+
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.get("/profile", response_model=AuthUserOut)
-def profile(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def profile(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         if username is None:
             raise HTTPException(status_code=401, detail="Token inválido")
+
+        # ✅ Verificar si el token sigue en Redis
+        stored_token = await redis_client.get(f"token:{username}")
+        if stored_token is None or stored_token != token:
+            raise HTTPException(status_code=401, detail="Token expirado o inválido")
 
         user = db.query(AuthUser).filter(AuthUser.username == username).first()
         if not user:
@@ -83,3 +99,14 @@ def profile(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
         return user
     except JWTError:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    
+@router.post("/logout")
+async def logout(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username:
+            await redis_client.delete(f"token:{username}")
+        return {"message": "Sesión cerrada correctamente"}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
