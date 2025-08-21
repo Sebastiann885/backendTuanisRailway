@@ -6,4 +6,7 @@ mysql-connector-python
 redis
 python-jose
 pydantic
+itsdangerous
+python-multipart
+passlib[bcrypt]
 pydantic-settings
