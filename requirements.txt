@@ -9,3 +9,6 @@ aiomysql
 itsdangerous
 passlib[bcrypt]
 python-jose[cryptography]
+pymysql
+sqlalchemy
+
