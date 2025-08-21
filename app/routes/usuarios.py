@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 from fastapi.security import OAuth2PasswordBearer
-from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
 from app import models, schemas
 from app.database import get_db
 from app.cache import init_redis
@@ -49,7 +49,7 @@ def crear_usuario(
     db.commit()
     db.refresh(nuevo_usuario)
 
-    # 🔹 Invalida cache de la lista de usuarios
+    # 🔹 Limpiar cache porque la lista de usuarios cambió
     asyncio.create_task(invalidate_cache("usuarios:*"))
 
     return nuevo_usuario
@@ -67,14 +67,17 @@ async def listar_usuarios(
     if data := await redis.get(cache_key):
         return json.loads(data)
 
-    # Consultar BD en threadpool (evita bloqueo)
-    usuarios = await run_in_threadpool(lambda: db.query(models.Usuario).all())
+    # Consultar BD
+    usuarios = db.query(models.Usuario).all()
     usuarios_dict = [schemas.UsuarioOut.from_orm(u).dict() for u in usuarios]
 
-    # Guardar en cache por 60 segundos
-    await redis.set(cache_key, json.dumps(usuarios_dict), ex=60)
+    # ✅ Convertir a JSON serializable
+    usuarios_json = jsonable_encoder(usuarios_dict)
 
-    return usuarios_dict
+    # Guardar en cache por 60 segundos
+    await redis.set(cache_key, json.dumps(usuarios_json), ex=60)
+
+    return usuarios_json
 
 
 @router.get("/{cedula}", response_model=schemas.UsuarioOut)
@@ -90,41 +93,38 @@ async def obtener_usuario(
     if data := await redis.get(cache_key):
         return json.loads(data)
 
-    # Consultar BD en threadpool
-    usuario = await run_in_threadpool(
-        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
-    )
+    # Consultar BD
+    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     usuario_dict = schemas.UsuarioOut.from_orm(usuario).dict()
+    usuario_json = jsonable_encoder(usuario_dict)
 
     # Guardar en cache
-    await redis.set(cache_key, json.dumps(usuario_dict), ex=60)
+    await redis.set(cache_key, json.dumps(usuario_json), ex=60)
 
-    return usuario_dict
+    return usuario_json
 
 
 @router.put("/{cedula}", response_model=schemas.UsuarioOut)
-async def actualizar_usuario(
+def actualizar_usuario(
     cedula: str,
     datos: schemas.UsuarioBase,
     db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
-    usuario = await run_in_threadpool(
-        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
-    )
+    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     for key, value in datos.dict().items():
         setattr(usuario, key, value)
 
-    await run_in_threadpool(db.commit)
-    await run_in_threadpool(db.refresh, usuario)
+    db.commit()
+    db.refresh(usuario)
 
-    # 🔹 Invalida cache
+    # 🔹 Invalida cache del usuario y lista
     asyncio.create_task(invalidate_cache(f"usuario:{cedula}"))
     asyncio.create_task(invalidate_cache("usuarios:all"))
 
@@ -132,19 +132,17 @@ async def actualizar_usuario(
 
 
 @router.delete("/{cedula}")
-async def eliminar_usuario(
+def eliminar_usuario(
     cedula: str,
     db: Session = Depends(get_db),
     current_user: str = Depends(get_current_user)
 ):
-    usuario = await run_in_threadpool(
-        lambda: db.query(models.Usuario).filter_by(cedula=cedula).first()
-    )
+    usuario = db.query(models.Usuario).filter_by(cedula=cedula).first()
     if not usuario:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
-    await run_in_threadpool(lambda: db.delete(usuario))
-    await run_in_threadpool(db.commit)
+    db.delete(usuario)
+    db.commit()
 
     # 🔹 Invalida cache
     asyncio.create_task(invalidate_cache(f"usuario:{cedula}"))
